@@ -29,6 +29,40 @@ export function totalSeconds(segments: Segment[]): number {
   return segments.reduce((acc, s) => acc + (s.end - s.start), 0);
 }
 
+/**
+ * 半开区间集合作差：返回 a − b（先各自合并重叠 / 相接区间）。
+ * 结果片段继承 a 片段的附加字段（如未达标时段的缺口统计）。
+ * 用于从预演后的未达标时段中剔除原工程已有的部分，只保留「新增」时段。
+ */
+export function subtractSegments<T extends Segment>(a: T[], b: Segment[]): T[] {
+  const am = mergeSegments(a) as T[];
+  const bm = mergeSegments(b);
+  const out: T[] = [];
+  let j = 0;
+  for (const seg of am) {
+    let cursor = seg.start;
+    const push = (s: number, e: number) => {
+      if (e - s > EPS) out.push({ ...seg, start: s, end: e });
+    };
+    while (j < bm.length) {
+      const cut = bm[j];
+      if (cut.end <= seg.start + EPS) {
+        j++; // 切口完全在本段之前，永久跳过
+        continue;
+      }
+      if (cut.start >= seg.end - EPS) break; // 切口完全在本段之后，可能与后续 a 段相交，保留 j
+      const cs = Math.max(cut.start, cursor);
+      const ce = Math.min(cut.end, seg.end);
+      if (cs > cursor + EPS) push(cursor, cs);
+      cursor = Math.max(cursor, ce);
+      if (cut.end >= seg.end - EPS) break; // 切口延伸出本段，需保留给下一段 a
+      j++;
+    }
+    push(cursor, seg.end);
+  }
+  return out;
+}
+
 export interface UnderSegment extends Segment {
   /** 该时段内最少发声人数 */
   minSinging: number;

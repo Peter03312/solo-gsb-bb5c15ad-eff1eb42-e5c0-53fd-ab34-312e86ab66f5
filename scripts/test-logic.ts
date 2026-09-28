@@ -1,4 +1,5 @@
-import { underCoveredSegments, totalSeconds, mergeSegments } from '../src/lib/coverage';
+import { underCoveredSegments, totalSeconds, mergeSegments, subtractSegments } from '../src/lib/coverage';
+import { addedUnderByPart, addedUnderSeconds, applyAbsences, hasAbsences } from '../src/lib/absence';
 import { applyMove, findBestMove } from '../src/lib/optimize';
 import { createSampleProject } from '../src/lib/sample';
 import { loadProject, sanitizeProject, saveProject } from '../src/lib/storage';
@@ -141,6 +142,122 @@ check(
   mergeSegments([{ start: 5, end: 6 }, { start: 1, end: 2 }, { start: 2, end: 3 }, { start: 2.5, end: 4 }]),
   [{ start: 1, end: 4 }, { start: 5, end: 6 }],
 );
+
+// ---------- 临时缺席预演：半开合并、新增未达标差分、不改工程 ----------
+
+// 10a. subtractSegments：半开集合作差（b 是 a 的内部切口 / 部分相交 / 包含多段）
+check(
+  'subtract basic',
+  subtractSegments([{ start: 0, end: 10 }], [{ start: 2, end: 5 }]),
+  [{ start: 0, end: 2 }, { start: 5, end: 10 }],
+);
+check(
+  'subtract multi segments vs multi cuts',
+  subtractSegments([{ start: 0, end: 2 }, { start: 3, end: 8 }], [{ start: 1, end: 4 }, { start: 6, end: 9 }]),
+  [{ start: 0, end: 1 }, { start: 4, end: 6 }],
+);
+// 半开相接：切口 [2,4) 不吞掉 a 在 4 处的恢复点
+check(
+  'subtract half-open touching',
+  subtractSegments([{ start: 0, end: 4 }], [{ start: 2, end: 4 }]),
+  [{ start: 0, end: 2 }],
+);
+check('subtract no overlap', subtractSegments([{ start: 0, end: 2 }], [{ start: 2, end: 4 }]), [{ start: 0, end: 2 }]);
+check('subtract fully covered', subtractSegments([{ start: 1, end: 2 }], [{ start: 0, end: 5 }]), []);
+// 切口跨越多段 a 时每段都被正确切到
+check(
+  'subtract cut spans multiple a segments',
+  subtractSegments([{ start: 0, end: 2 }, { start: 4, end: 6 }], [{ start: 1, end: 5 }]),
+  [{ start: 0, end: 1 }, { start: 5, end: 6 }],
+);
+
+// 10b. 缺席与既有换气重叠：先按半开区间合并，只扣一个人，不重复计数
+{
+  // 2 人声部门槛 1（允许 1 人同时不在）。歌手1 换气 [2,4)，缺席 [3,5) 与之重叠：
+  // 合并为 [2,5)，歌手2 全程在唱 → 始终达标。若不合并，[3,4) 会被误判成两人同时不在。
+  const p = relayProject([[[2, 4]], []], { minSingers: 1, bpm: 120 });
+  const s0 = p.singers[0].id;
+  const preview = applyAbsences(p, [{ id: 'a1', singerId: s0, start: 3, end: 5 }]);
+  check('absence merges with breath under', totalSeconds(underCoveredSegments(
+    preview.singers[0].breaths, 2, 1, p.duration,
+  )), 0);
+  // 合并后该歌手只有一段 [2,5)
+  check('absence merges into one segment', preview.singers[0].breaths.map((b) => [b.start, b.end]), [[2, 5]]);
+}
+
+// 10c. 新增未达标差分：原工程达标的时段，缺席使其不达标 → 标为新增
+{
+  // 2 人声部门槛 2（任何人不在都不达标），无既有换气 → 原工程全曲达标；歌手1 缺席 [2,4) → 新增 [2,4)
+  const p = relayProject([[], []], { minSingers: 2, bpm: 120 });
+  const added = addedUnderByPart(p, [{ id: 'a1', singerId: p.singers[0].id, start: 2, end: 4 }]);
+  check('absence added under', added.get('p1')!.map((s) => [s.start, s.end]), [[2, 4]]);
+  near('absence added seconds', addedUnderSeconds(added), 2);
+}
+
+// 10d. 原工程已经未达标的时段，缺席落在其中 → 不产生新增（差分剔除）
+{
+  // 2 人声部门槛 2：任何人不在都不达标，歌手1 换气 [2,4) 已造成未达标 [2,4)。
+  // 歌手2 在 [3,5) 缺席：预演后未达标扩为 [2,5)，但新增只有 [4,5)，[2,4) 是原有的。
+  const p = relayProject([[[2, 4]], []], { minSingers: 2, bpm: 120 });
+  const added = addedUnderByPart(p, [{ id: 'a1', singerId: p.singers[1].id, start: 3, end: 5 }]);
+  check('absence extends existing under, only tail is new', added.get('p1')!.map((s) => [s.start, s.end]), [[4, 5]]);
+}
+
+// 10e. 缺席与既有未达标完全重合 → 新增 0
+{
+  const p = relayProject([[[2, 4]], []], { minSingers: 2, bpm: 120 });
+  const added = addedUnderByPart(p, [{ id: 'a1', singerId: p.singers[1].id, start: 2, end: 4 }]);
+  check('absence inside existing under adds nothing', added.get('p1')!, []);
+  near('absence inside existing under zero seconds', addedUnderSeconds(added), 0);
+}
+
+// 10f. 多声部：新增只计入缺席歌手所在声部
+{
+  const p = createSampleProject();
+  const wang = p.singers.find((s) => s.name === '王芳')!;
+  const nvgao = p.parts[0];
+  // 王芳 [51,53) 缺席：该时段只有李雪在换气 [50,53)（原工程王芳+赵敏两人在唱，恰好达标），
+  // 王芳缺席后只剩赵敏 1 人唱 → 新产生缺口
+  const added = addedUnderByPart(p, [{ id: 'a1', singerId: wang.id, start: 51, end: 53 }]);
+  check('absence other parts untouched', p.parts.filter((pt) => pt.id !== nvgao.id).every((pt) => (added.get(pt.id) ?? []).length === 0), true);
+  check('absence target part has new', added.get(nvgao.id)!.length > 0, true);
+}
+
+// 10g. 纯函数与标记：applyAbsences 不改原工程；hasAbsences 判定；越界缺席被裁剪
+{
+  const p = relayProject([[[2, 4]]], { minSingers: 1, bpm: 120 });
+  const before = JSON.stringify(p);
+  const s0 = p.singers[0].id;
+  const preview = applyAbsences(p, [
+    { id: 'a1', singerId: s0, start: -5, end: 1 },
+    { id: 'a2', singerId: s0, start: 50, end: 999 },
+  ]);
+  check('absence apply is pure', JSON.stringify(p), before);
+  check('absence clamps to duration', preview.singers[0].breaths.map((b) => [b.start, b.end]), [
+    [0, 1],
+    [2, 4],
+    [50, 60],
+  ]);
+  check('hasAbsences true', hasAbsences([{ id: 'a', singerId: s0, start: 0, end: 1 }]), true);
+  check('hasAbsences false', hasAbsences([]), false);
+  // 原工程歌手换气段 id 不被复用 / 污染
+  check('absence original singer untouched', p.singers[0].breaths.map((b) => [b.start, b.end]), [[2, 4]]);
+}
+
+// 10h. 两名歌手同时缺席、低于门槛 → 整段新增；移除任一缺席即恢复
+{
+  // 3 人声部门槛 2（最多 1 人不在）；两人同时缺席 [2,4) → [2,4) 不达标
+  const p = relayProject([[], [], []], { minSingers: 2, bpm: 120 });
+  const [s0, s1] = [p.singers[0].id, p.singers[1].id];
+  const two = addedUnderByPart(p, [
+    { id: 'a1', singerId: s0, start: 2, end: 4 },
+    { id: 'a2', singerId: s1, start: 2, end: 4 },
+  ]);
+  check('two simultaneous absences new under', two.get('p1')!.map((s) => [s.start, s.end]), [[2, 4]]);
+  // 只剩一人缺席 → 仍有 2 人唱 → 无新增
+  const one = addedUnderByPart(p, [{ id: 'a1', singerId: s0, start: 2, end: 4 }]);
+  check('single absence still covered', one.get('p1')!, []);
+}
 
 // ---------- 节拍图：默认值、拍↔秒换算、跨变速点吸附 ----------
 

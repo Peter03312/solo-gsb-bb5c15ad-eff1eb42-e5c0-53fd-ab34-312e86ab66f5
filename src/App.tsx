@@ -10,6 +10,7 @@ import {
 } from './lib/snapshot';
 import { normalizeBeatMap } from './lib/tempo';
 import { partUnder, totalSeconds, type Segment } from './lib/coverage';
+import { addedUnderByPart, addedUnderSeconds, applyAbsences, hasAbsences, type AbsenceInterval } from './lib/absence';
 import { projectFatigue } from './lib/fatigue';
 import { applyMove, findBestMove, type OptimizeResult } from './lib/optimize';
 import { applyRelay, planRelay, type RelayRequest, type RelayResult, type RelaySuccess } from './lib/relay';
@@ -19,6 +20,7 @@ import Sidebar from './components/Sidebar';
 import Timeline, { type Ghost } from './components/Timeline';
 import OptimizerPanel from './components/OptimizerPanel';
 import RelayPanel from './components/RelayPanel';
+import AbsencePanel from './components/AbsencePanel';
 
 export default function App() {
   const [project, setProject] = useState<Project>(() => loadProject() ?? createSampleProject());
@@ -27,6 +29,11 @@ export default function App() {
   const [result, setResult] = useState<OptimizeResult | null>(null);
   const [previewOffset, setPreviewOffset] = useState<number | null>(null);
   const [relay, setRelay] = useState<RelaySuccess | null>(null);
+  /**
+   * 临时缺席预演：纯页面状态（不写入工程、不持久化、不进快照）。
+   * 切换 / 编辑工程（含节拍图）或进入寻优 / 接力预览时清空。
+   */
+  const [absences, setAbsences] = useState<AbsenceInterval[]>([]);
   const [pxPerSec, setPxPerSec] = useState(10);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [snapshots, setSnapshots] = useState<RehearsalSnapshot[]>(() => loadSnapshots());
@@ -51,30 +58,37 @@ export default function App() {
 
   const clearRelay = useCallback(() => setRelay(null), []);
 
+  /** 退出临时缺席预演：清空缺席区间后覆盖立即恢复为原工程计算结果。 */
+  const clearAbsences = useCallback(() => setAbsences([]), []);
+
   /**
    * 所有工程修改的统一入口：修改后寻优 / 接力预览均失效
-   * （预览基于修改前的工程，继续展示会与时间轴不符）。
+   * （预览基于修改前的工程，继续展示会与时间轴不符）；
+   * 缺席预演基于旧工程，切换或编辑工程时一并清空。
    */
   const mutate = useCallback(
     (fn: (p: Project) => Project) => {
       clearOptimization();
       clearRelay();
+      clearAbsences();
       setProject(fn);
     },
-    [clearOptimization, clearRelay],
+    [clearOptimization, clearRelay, clearAbsences],
   );
 
   /**
    * 仅修改节拍图：换气段的实际秒位置保持不变（仅重新显示对应拍位），
    * 因此不影响寻优结果（寻优基于秒），无需清空寻优预览；
    * 但接力排程的候选是在旧拍域上枚举的，节拍图一变即失效，需退出接力预览。
+   * 缺席区间按秒定义、本不受节拍图影响，但按「编辑工程即清空预演」的约定一并清空。
    */
   const mutateBeatMap = useCallback(
     (fn: (b: Project['beatMap']) => Project['beatMap']) => {
       clearRelay();
+      clearAbsences();
       setProject((p) => ({ ...p, beatMap: normalizeBeatMap(fn(p.beatMap)) }));
     },
-    [clearRelay],
+    [clearRelay, clearAbsences],
   );
 
   // 选中的换气段被删除后，清空选择
@@ -99,11 +113,34 @@ export default function App() {
     return project;
   }, [project, relay, previewing, result, previewOffset]);
 
+  /**
+   * 覆盖计算专用工程：在 effectiveProject 之上叠加临时缺席预演
+   * （缺席与同歌手既有换气先按半开区间合并，避免重叠重复扣人）。
+   * 缺席预演与寻优 / 接力预览互斥，因此二者不会同时叠加。
+   */
+  const coverageProject = useMemo(
+    () => (hasAbsences(absences) ? applyAbsences(effectiveProject, absences) : effectiveProject),
+    [effectiveProject, absences],
+  );
+
+  const absenceActive = hasAbsences(absences);
+
   const coverage = useMemo(() => {
     const m = new Map<string, ReturnType<typeof partUnder>>();
-    for (const p of effectiveProject.parts) m.set(p.id, partUnder(effectiveProject, p.id));
+    for (const p of coverageProject.parts) m.set(p.id, partUnder(coverageProject, p.id));
     return m;
-  }, [effectiveProject]);
+  }, [coverageProject]);
+
+  /** 对比原工程，各声部「由缺席新增」的未达标时段（非预演时为 null）。 */
+  const addedCoverage = useMemo(() => {
+    if (!absenceActive) return null;
+    return addedUnderByPart(effectiveProject, absences);
+  }, [absenceActive, effectiveProject, absences]);
+
+  const addedUnderTotal = useMemo(
+    () => (addedCoverage ? addedUnderSeconds(addedCoverage) : 0),
+    [addedCoverage],
+  );
 
   const totalUnder = useMemo(
     () => [...coverage.values()].reduce((acc, segs) => acc + totalSeconds(segs), 0),
@@ -210,10 +247,27 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [selection, deleteInterval]);
 
+  // ---------- 临时缺席预演 ----------
+  /** 添加一段缺席（半开 [start, end) 秒）；进入预演时退出寻优 / 接力预览（三种预览互斥）。 */
+  const addAbsence = useCallback(
+    (singerId: string, start: number, end: number) => {
+      if (!(end > start)) return;
+      clearOptimization();
+      clearRelay();
+      setAbsences((list) => [...list, { id: uid(), singerId, start, end }]);
+    },
+    [clearOptimization, clearRelay],
+  );
+
+  const removeAbsence = useCallback((id: string) => {
+    setAbsences((list) => list.filter((a) => a.id !== id));
+  }, []);
+
   // ---------- 寻优 ----------
   const runOptimize = () => {
     if (!selection) return;
     clearRelay();
+    clearAbsences();
     const r = findBestMove(project, selection.singerId, selection.intervalId, Math.max(0, Math.round(range)));
     if (!r) return;
     setResult(r);
@@ -229,6 +283,7 @@ export default function App() {
   // ---------- 声部接力排程 ----------
   const runRelay = (req: RelayRequest): RelayResult => {
     clearOptimization();
+    clearAbsences();
     const r = planRelay(project, req);
     // 仅在成功时进入整组幽灵块预览；失败原因（区分两类）交给面板展示
     setRelay(r.ok ? r : null);
@@ -261,6 +316,7 @@ export default function App() {
         if (!p) throw new Error('invalid');
         clearOptimization();
         clearRelay();
+        clearAbsences();
         setSelection(null);
         setProject(p);
       })
@@ -270,6 +326,7 @@ export default function App() {
   const loadSample = () => {
     clearOptimization();
     clearRelay();
+    clearAbsences();
     setSelection(null);
     setProject(createSampleProject());
   };
@@ -291,6 +348,7 @@ export default function App() {
   const handleRestoreSnapshot = (snapshot: RehearsalSnapshot) => {
     clearOptimization();
     clearRelay();
+    clearAbsences();
     setSelection(null);
     setProject((p) => restoreProjectSnapshot(p, snapshot));
   };
@@ -341,8 +399,14 @@ export default function App() {
               <b className={totalUnder > 0 ? 'bad' : 'ok'}>{totalUnder.toFixed(1)}s</b>
               <span className="muted">
                 （{underCount} 处{previewing ? ' · 寻优预览中' : ''}
-                {relay ? ' · 接力预览中' : ''}）
+                {relay ? ' · 接力预览中' : ''}
+                {absenceActive ? ' · 临时缺席预演中' : ''}）
               </span>
+              {absenceActive && (
+                <em className={`absence-delta-badge ${addedUnderTotal > 0 ? 'absence-added' : 'ok'}`}>
+                  {addedUnderTotal > 0 ? `缺席新增 +${addedUnderTotal.toFixed(1)}s` : '缺席未新增未达标'}
+                </em>
+              )}
             </div>
             <div className="stat">
               疲劳警示：
@@ -377,9 +441,21 @@ export default function App() {
             </div>
           )}
 
+          {absenceActive && (
+            <div className="preview-banner absence-banner">
+              🕳 临时缺席预演中：缺席区间已与各歌手既有换气按半开区间合并后重算声部覆盖，紫色为
+              <b>由缺席新增</b>的未达标时段（原工程已有的红色条纹保留）；工程与换气段均未被修改。
+              <button className="primary" onClick={clearAbsences}>
+                退出预演（恢复原覆盖）
+              </button>
+            </div>
+          )}
+
           <Timeline
             project={project}
             coverage={coverage}
+            addedCoverage={addedCoverage}
+            absences={absences}
             fatigue={fatigue}
             selection={selection}
             ghost={ghost}
@@ -401,6 +477,15 @@ export default function App() {
             onPlan={runRelay}
             onApply={applyRelayPreview}
             onCancel={clearRelay}
+          />
+
+          <AbsencePanel
+            project={project}
+            absences={absences}
+            addedCoverage={addedCoverage ?? new Map()}
+            onAdd={addAbsence}
+            onRemove={removeAbsence}
+            onClear={clearAbsences}
           />
 
           <OptimizerPanel

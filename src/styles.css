@@ -1157,3 +1157,176 @@ input[type='number'] {
 .relay-list .muted {
   font-size: 12px;
 }
+
+/* ---------- 临时缺席预演 ---------- */
+.absence-banner {
+  background: #2a1a45;
+  border-bottom-color: #7e22ce;
+  color: #e9d5ff;
+}
+
+.absence-added {
+  color: #c084fc;
+}
+
+/* 工具条上的缺席新增徽标 */
+.absence-delta-badge {
+  font-style: normal;
+  margin-left: 8px;
+  border: 1px solid #7e22ce;
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 12px;
+  color: #c084fc;
+}
+
+/* 覆盖行标签里的「新增 +Ns」 */
+.coverage-row em .absence-delta {
+  font-size: 10px;
+}
+
+/* 原工程已有的未达标：预演时降为暗红条纹，与新增的紫色区分 */
+.under-seg.preexisting {
+  background: repeating-linear-gradient(45deg, #7f1d1d, #7f1d1d 6px, #450a0a 6px, #450a0a 12px);
+  box-shadow: none;
+  opacity: 0.85;
+}
+
+/* 由临时缺席新增的未达标：紫色条纹 */
+.under-seg.absence-added-seg {
+  background: repeating-linear-gradient(45deg, #c084fc, #c084fc 6px, #7e22ce 6px, #7e22ce 12px);
+  box-shadow: 0 0 6px rgba(192, 132, 252, 0.75);
+  z-index: 1;
+}
+
+/* 歌手轨道上的临时缺席块：紫色虚线（区别于实线换气块与琥珀色接力幽灵块），不可交互 */
+.absence-block {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  border: 2px dashed #c084fc;
+  border-radius: 5px;
+  background: rgba(192, 132, 252, 0.14);
+  box-shadow: 0 0 8px rgba(192, 132, 252, 0.3);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.absence-panel {
+  max-height: 38%;
+}
+
+.absence-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.absence-live {
+  color: #e9d5ff;
+  border-color: #7e22ce;
+  font-size: 11px;
+}
+
+.absence-form {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.absence-form input {
+  width: 72px;
+}
+
+.absence-form select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 150px;
+}
+
+.absence-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.absence-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.absence-group {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.absence-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.absence-group-head em {
+  font-style: normal;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.absence-singer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+
+.absence-singer-name {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 48px;
+}
+
+.absence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px dashed #7e22ce;
+  border-radius: 999px;
+  padding: 1px 6px 1px 10px;
+  font-size: 12px;
+  color: #e9d5ff;
+  background: rgba(126, 34, 206, 0.12);
+}
+
+.absence-chip-x {
+  border: none;
+  background: transparent;
+  color: #c084fc;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.absence-chip-x:hover {
+  color: #fff;
+}
+
