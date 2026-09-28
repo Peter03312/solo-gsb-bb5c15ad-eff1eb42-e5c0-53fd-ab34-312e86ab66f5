@@ -1,4 +1,4 @@
-import { underCoveredSegments, totalSeconds, mergeSegments } from '../src/lib/coverage';
+import { underCoveredSegments, totalSeconds, mergeSegments, partUnder } from '../src/lib/coverage';
 import { applyMove, findBestMove } from '../src/lib/optimize';
 import { createSampleProject } from '../src/lib/sample';
 import { loadProject, sanitizeProject, saveProject } from '../src/lib/storage';
@@ -34,6 +34,14 @@ import {
   sanitizeSnapshot,
   saveSnapshots,
 } from '../src/lib/snapshot';
+import {
+  type AbsenceInterval,
+  addedUnderSegments,
+  applyAbsences,
+  clampAbsence,
+  mergeUnavailable,
+  subtractUnder,
+} from '../src/lib/absence';
 import type { Project } from '../src/types';
 import { uid } from '../src/lib/id';
 
@@ -937,6 +945,166 @@ check(
     check('fatigue before relay preview', [before.get('s0')![0].start, before.get('s1')![0].start], [2, 2]);
     check('fatigue recomputed on relay preview', [preview.get('s0')![0].start, preview.get('s1')![0].start], [3, 4]);
   }
+}
+
+// ---------- 临时缺席预演：合并去重、声部覆盖、新增未达标集合差 ----------
+
+const tuples = (segs: { start: number; end: number }[]) => segs.map((s) => [s.start, s.end]);
+
+// 54. 同一歌手的缺席与既有换气先合并（半开并集）：重叠 / 相接不重复扣人
+check(
+  'absence merge overlapping',
+  tuples(mergeUnavailable([{ start: 2, end: 4 }], [{ start: 3, end: 5 }])),
+  [[2, 5]],
+);
+check(
+  'absence merge touching half-open',
+  tuples(mergeUnavailable([{ start: 0, end: 2 }], [{ start: 2, end: 4 }])),
+  [[0, 4]],
+);
+check(
+  'absence merge multiple overlaps',
+  tuples(mergeUnavailable([{ start: 1, end: 3 }, { start: 6, end: 8 }], [{ start: 2, end: 7 }, { start: 7, end: 9 }])),
+  [[1, 9]],
+);
+
+// 55. clampAbsence：裁剪到全曲、零长度与非有限值拒绝
+check('absence clamp inside', clampAbsence(-2, 12, 10), { start: 0, end: 10 });
+check('absence clamp zero length', clampAbsence(3, 3, 10), null);
+check('absence clamp reversed', clampAbsence(8, 2, 10), null);
+check('absence clamp NaN', clampAbsence(NaN, 5, 10), null);
+check('absence clamp Infinity', clampAbsence(0, Infinity, 10), null);
+
+// 56. 端到端：3 人声部门槛 2（允许 1 人同时不发声），无换气 → 原全曲达标
+{
+  const p = relayProject([[], [], []], { minSingers: 2, bpm: 120, duration: 20 });
+  check('absence baseline covered', totalSeconds(partUnder(p, 'p1')), 0);
+
+  // 歌手1 缺席 [4,8)：任一时段只缺 1 人 → 仍达标
+  const one: Map<string, AbsenceInterval[]> = new Map([
+    [p.singers[0].id, [{ id: 'a1', start: 4, end: 8 }]],
+  ]);
+  const preview1 = applyAbsences(p, one);
+  check('absence one singer still covered', totalSeconds(partUnder(preview1, 'p1')), 0);
+  const added1 = addedUnderSegments(p, preview1).get('p1')!;
+  check('absence one singer no added', tuples(added1), []);
+
+  // 歌手2 同时段也缺席 [5,7)：[5,7) 只剩 1 人唱 → 新增未达标恰好 2s
+  const two: Map<string, AbsenceInterval[]> = new Map([
+    [p.singers[0].id, [{ id: 'a1', start: 4, end: 8 }]],
+    [p.singers[1].id, [{ id: 'a2', start: 5, end: 7 }]],
+  ]);
+  const preview2 = applyAbsences(p, two);
+  check('absence overlap added seconds', totalSeconds(partUnder(preview2, 'p1')), 2);
+  const added2 = addedUnderSegments(p, preview2).get('p1')!;
+  check('absence overlap added range', tuples(added2), [[5, 7]]);
+  check('absence added min singing', [added2[0].minSinging, added2[0].deficit], [1, 1]);
+}
+
+// 57. 缺席与自身既有换气重叠只扣一人；原本已未达标的时段不计入新增
+{
+  // 2 人声部门槛 2：歌手1 已有换气 [2,4) → 原工程 [2,4) 未达标 2s
+  const p = relayProject([[[2, 4]], []], { minSingers: 2, bpm: 120, duration: 20 });
+  check('absence pre-existing under', totalSeconds(partUnder(p, 'p1')), 2);
+
+  // 歌手1 在 [3,5) 缺席：与换气合并为 [2,5)，不达标仍是只有歌手2 在唱 → 总未达标 3s
+  const m: Map<string, AbsenceInterval[]> = new Map([
+    [p.singers[0].id, [{ id: 'a', start: 3, end: 5 }]],
+  ]);
+  const preview = applyAbsences(p, m);
+  check('absence merged with breath total', tuples(partUnder(preview, 'p1')), [[2, 5]]);
+  // 新增只是 [4,5)：[2,4) 原本就不达标
+  check('absence added excludes pre-existing', tuples(addedUnderSegments(p, preview).get('p1')!), [[4, 5]]);
+}
+
+// 58. 同一歌手多段缺席重叠，合并后也只扣一人
+{
+  const p = relayProject([[], [], []], { minSingers: 2, bpm: 120, duration: 20 });
+  const m: Map<string, AbsenceInterval[]> = new Map([
+    [
+      p.singers[0].id,
+      [
+        { id: 'a', start: 2, end: 6 },
+        { id: 'b', start: 4, end: 8 },
+      ],
+    ],
+  ]);
+  const preview = applyAbsences(p, m);
+  // 合并为 [2,8)，该歌手只算一次缺席：其余 2 人始终在唱 → 达标
+  check('absence self overlap single count', totalSeconds(partUnder(preview, 'p1')), 0);
+  // 原工程与预览工程的歌手换气数不被污染（预览段是合成的）
+  check('absence original breaths intact', p.singers[0].breaths.length, 0);
+}
+
+// 59. 半开相接：2 人声部门槛 2，换气 [2,4) 与缺席 [4,6) 相接，合并为连续不发声
+{
+  const p = relayProject([[[2, 4]], []], { minSingers: 2, bpm: 120, duration: 20 });
+  const m: Map<string, AbsenceInterval[]> = new Map([
+    [p.singers[0].id, [{ id: 'a', start: 4, end: 6 }]],
+  ]);
+  const preview = applyAbsences(p, m);
+  check('absence half-open adjacency', tuples(partUnder(preview, 'p1')), [[2, 6]]);
+}
+
+// 60. 缺席只影响对应声部：另一声部覆盖不变
+{
+  // 单声部工程复制出两声部，缺席只打在 p1 的歌手上
+  const one = relayProject([[], []], { minSingers: 2, bpm: 120, duration: 20 });
+  const p: Project = {
+    ...one,
+    parts: [
+      one.parts[0],
+      { id: 'p2', name: '第二声部', color: '#34d399', minSingers: 2 },
+    ],
+    singers: [
+      ...one.singers,
+      ...one.singers.map((s, i) => ({
+        ...s,
+        id: `t${i}`,
+        partId: 'p2',
+        breaths: [],
+      })),
+    ],
+  };
+  const m: Map<string, AbsenceInterval[]> = new Map([
+    [p.singers[0].id, [{ id: 'a', start: 0, end: 20 }]],
+  ]);
+  const preview = applyAbsences(p, m);
+  const added = addedUnderSegments(p, preview);
+  check('absence only own part p1', totalSeconds(added.get('p1')!), 20);
+  check('absence other part untouched', totalSeconds(added.get('p2')!), 0);
+}
+
+// 61. 无缺席时 applyAbsences 返回原引用；新增集合差不改变原有统计
+{
+  const p = relayProject([[[1, 2]]], { minSingers: 1, bpm: 120, duration: 10 });
+  check('absence empty map identity', applyAbsences(p, new Map()), p);
+  const empty = new Map<string, AbsenceInterval[]>([['nobody', []]]);
+  check('absence empty lists identity', applyAbsences(p, empty), p);
+  // 无缺席时新增集合差为空（原工程与自身比较）
+  check('absence added self diff', addedUnderSegments(p, p).get('p1'), []);
+}
+
+// 62. subtractUnder 半开集合差：切分并继承统计字段
+{
+  const a = [{ start: 0, end: 10, minSinging: 1, deficit: 2 }];
+  check('absence subtract middle', tuples(subtractUnder(a, [{ start: 3, end: 7 }])), [
+    [0, 3],
+    [7, 10],
+  ]);
+  const sliced = subtractUnder(a, [{ start: 3, end: 7 }]);
+  check('absence subtract keeps stats', [sliced[0].minSinging, sliced[1].deficit], [1, 2]);
+  check('absence subtract full cover', subtractUnder(a, [{ start: 0, end: 10 }]), []);
+  check('absence subtract no overlap', tuples(subtractUnder(a, [{ start: 10, end: 12 }])), [[0, 10]]);
+  check(
+    'absence subtract multi cover',
+    tuples(subtractUnder(a, [{ start: 1, end: 2 }, { start: 5, end: 8 }])),
+    [
+      [0, 1],
+      [2, 5],
+      [8, 10],
+    ],
+  );
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

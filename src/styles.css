@@ -1157,3 +1157,97 @@ input[type='number'] {
 .relay-list .muted {
   font-size: 12px;
 }
+
+/* ---------- 临时缺席预演 ---------- */
+.absence-banner {
+  background: #2e1a3d;
+  border-bottom-color: #7e22ce;
+  color: #e9d5ff;
+}
+
+.absence-bad {
+  color: #d8b4fe;
+}
+
+.under-seg.preexisting {
+  opacity: 0.28;
+  box-shadow: none;
+}
+
+/* 由缺席新增的未达标：紫色斜纹叠在原有红色（暗色）之上，只突出新增部分 */
+.under-seg.absence-added {
+  background: repeating-linear-gradient(45deg, #c084fc, #c084fc 6px, #7e22ce 6px, #7e22ce 12px);
+  box-shadow: 0 0 7px rgba(192, 132, 252, 0.85);
+  z-index: 1;
+}
+
+.absence-ghost {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  border: 2px dashed #d8b4fe;
+  border-radius: 5px;
+  background: rgba(192, 132, 252, 0.18);
+  box-shadow: 0 0 8px rgba(192, 132, 252, 0.4);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.absence-panel {
+  max-height: 36%;
+}
+
+.absence-badge {
+  border-color: #7e22ce;
+  color: #d8b4fe;
+}
+
+.absence-part-stats {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 13px;
+}
+
+.absence-part-stats li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.absence-part-stats .muted {
+  font-size: 12px;
+}
+
+.absence-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.absence-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 0;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
+}
+
+.absence-singer {
+  font-weight: 600;
+  flex: none;
+}
+
+.absence-list .muted {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

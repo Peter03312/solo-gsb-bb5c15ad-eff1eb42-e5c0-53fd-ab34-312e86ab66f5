@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Project, Selection } from '../types';
 import { totalSeconds, type Segment, type UnderSegment } from '../lib/coverage';
+import { subtractUnder } from '../lib/absence';
 import type { FatigueSegment } from '../lib/fatigue';
 import { placeNewInterval, placeNewIntervalOnBeat } from '../lib/constraints';
 import { beatTicks, fmtTimeAsBeat, snapTimeToBeat, timeToLocation } from '../lib/tempo';
@@ -33,6 +34,10 @@ interface Props {
   ghost: Ghost | null;
   /** 声部接力排程的整组幽灵块预览（null = 未在预览） */
   relayPreview: RelayPreview | null;
+  /** 临时缺席预演：各声部「由缺席新增」的未达标时段（null = 未在预演） */
+  addedCoverage: Map<string, UnderSegment[]> | null;
+  /** 临时缺席预演：各歌手的缺席区间（用于轨道渲染） */
+  absenceGhosts: Ghost[];
   pxPerSec: number;
   /** 时间轴滚动容器 ref（供侧栏疲劳汇总跳转定位） */
   scrollRef: React.RefObject<HTMLDivElement>;
@@ -168,6 +173,11 @@ export default function Timeline(props: Props) {
         const singers = project.singers.filter((s) => s.partId === part.id);
         const under = props.coverage.get(part.id) ?? [];
         const underSec = totalSeconds(under);
+        const absenceActive = props.addedCoverage !== null;
+        const addedSegs = props.addedCoverage?.get(part.id) ?? [];
+        const addedSec = totalSeconds(addedSegs);
+        // 预演中：预演后时段减去新增时段 = 原本就未达标的部分（暗色显示，不作重点）
+        const baseSegs = absenceActive ? subtractUnder(under, addedSegs) : under;
         const relayWin =
           props.relayPreview && props.relayPreview.partId === part.id
             ? props.relayPreview
@@ -179,9 +189,15 @@ export default function Timeline(props: Props) {
                 <span className="dot" style={{ background: part.color }} />
                 <span className="part-title">{part.name}</span>
                 <span className="part-req">需≥{part.minSingers}人</span>
-                <em className={underSec > 0 ? 'bad' : 'ok'}>
-                  {underSec > 0 ? `未达标 ${underSec.toFixed(1)}s` : '达标'}
-                </em>
+                {absenceActive ? (
+                  <em className={addedSec > 0 ? 'absence-bad' : 'ok'}>
+                    {addedSec > 0 ? `缺席新增 ${addedSec.toFixed(1)}s` : '无新增'}
+                  </em>
+                ) : (
+                  <em className={underSec > 0 ? 'bad' : 'ok'}>
+                    {underSec > 0 ? `未达标 ${underSec.toFixed(1)}s` : '达标'}
+                  </em>
+                )}
               </div>
               <div className="track coverage-track" style={gridStyle}>
                 {beatMode && beatGrid}
@@ -194,15 +210,27 @@ export default function Timeline(props: Props) {
                     }}
                   />
                 )}
-                {under.map((seg) => (
+                {baseSegs.map((seg) => (
                   <div
-                    key={`${seg.start}-${seg.end}`}
-                    className="under-seg"
+                    key={`base-${seg.start}-${seg.end}`}
+                    className={absenceActive ? 'under-seg preexisting' : 'under-seg'}
                     style={{ left: seg.start * pxPerSec, width: Math.max(2, (seg.end - seg.start) * pxPerSec) }}
                     title={
                       beatMode
-                        ? `拍位 ${fmtTimeAsBeat(seg.start, beatMap)} – ${fmtTimeAsBeat(seg.end, beatMap)}\n人数不足 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
-                        : `人数不足 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
+                        ? `拍位 ${fmtTimeAsBeat(seg.start, beatMap)} – ${fmtTimeAsBeat(seg.end, beatMap)}\n原有未达标 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
+                        : `原有未达标 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
+                    }
+                  />
+                ))}
+                {addedSegs.map((seg) => (
+                  <div
+                    key={`added-${seg.start}-${seg.end}`}
+                    className="under-seg absence-added"
+                    style={{ left: seg.start * pxPerSec, width: Math.max(2, (seg.end - seg.start) * pxPerSec) }}
+                    title={
+                      beatMode
+                        ? `拍位 ${fmtTimeAsBeat(seg.start, beatMap)} – ${fmtTimeAsBeat(seg.end, beatMap)}\n缺席新增未达标 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
+                        : `缺席新增未达标 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n最少 ${seg.minSinging} 人发声（缺 ${seg.deficit} 人）`
                     }
                   />
                 ))}
@@ -222,6 +250,7 @@ export default function Timeline(props: Props) {
               const relayGhosts = props.relayPreview
                 ? props.relayPreview.ghosts.filter((g) => g.singerId === singer.id)
                 : [];
+              const singerAbsences = props.absenceGhosts.filter((g) => g.singerId === singer.id);
               const fatigueSegs = props.fatigue.get(singer.id) ?? [];
               const fatigueTitle = (seg: FatigueSegment) =>
                 (beatMode
@@ -321,6 +350,18 @@ export default function Timeline(props: Props) {
                         borderColor: part.color,
                       }}
                       title={`接力换气（预览）${fmtSec(g.start)} – ${fmtSec(g.end)}`}
+                    />
+                  ))}
+                  {singerAbsences.map((g) => (
+                    <div
+                      key={`absence-${g.start}-${g.end}`}
+                      className="absence-ghost"
+                      style={{
+                        left: g.start * pxPerSec,
+                        width: Math.max(4, (g.end - g.start) * pxPerSec),
+                        borderColor: part.color,
+                      }}
+                      title={`临时缺席（预演）${fmtSec(g.start)} – ${fmtSec(g.end)}`}
                     />
                   ))}
                 </div>
